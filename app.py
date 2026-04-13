@@ -2,194 +2,283 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import pickle
+import shap
+import matplotlib.pyplot as plt
 from pathlib import Path
 
-# ──────────────────────────────────────────────────────────
-# Data initialisation (called once, cached in session_state)
-# ──────────────────────────────────────────────────────────
-DATA_DIR = Path(__file__).parent / "streamlit_data"
-
-FEATURE_NAMES = ["Age", "BMI", "Gender", "VAS", "LL", "SS"]
-CLASS_NAMES   = ["Compensated", "Rigid", "Unstable"]
-
-FEATURE_DISPLAY = {
-    "Age":    "Age (years)",
-    "BMI":    "Body Mass Index (kg/m²)",
-    "Gender": "Gender (0 = Female, 1 = Male)",
-    "VAS":    "Visual Analogue Scale (0–10)",
-    "LL":     "Lumbar Lordosis (°)",
-    "SS":     "Sacral Slope (°)",
-}
-
-
-def initialize_data():
-    """Load model, scaler and reference data into session_state."""
-    if "model" in st.session_state:
-        return  # already loaded
-
-    pipeline = joblib.load(DATA_DIR / "lr_pipeline.joblib")
-    scaler   = joblib.load(DATA_DIR / "scaler.joblib")
-    lr_model = joblib.load(DATA_DIR / "lr_model.joblib")
-
-    X_df = pd.read_csv(DATA_DIR / "all_features.csv")
-    labels_df = pd.read_csv(DATA_DIR / "all_labels.csv")
-
-    with open(DATA_DIR / "shap_data.pkl", "rb") as f:
-        shap_data = pickle.load(f)
-
-    st.session_state["model"]         = pipeline
-    st.session_state["scaler"]        = scaler
-    st.session_state["lr_model"]      = lr_model
-    st.session_state["X_df"]          = X_df
-    st.session_state["labels_df"]     = labels_df
-    st.session_state["shap_data"]     = shap_data
-    st.session_state["feature_names"] = FEATURE_NAMES
-    st.session_state["class_names"]   = CLASS_NAMES
-
-
-# ──────────────────────────────────────────────────────────
-# Page config
-# ──────────────────────────────────────────────────────────
+# ── Page config ──
 st.set_page_config(
-    page_title="PRE-SLIP · Phenotype Screening",
+    page_title="PRE-SLIP Calculator",
     page_icon="🦴",
-    layout="wide",
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
-initialize_data()
+# ── Hide sidebar, header, footer ──
+st.markdown("""
+<style>
+    [data-testid="collapsedControl"] { display: none; }
+    [data-testid="stSidebar"] { display: none; }
+    #MainMenu { visibility: hidden; }
+    header { visibility: hidden; }
+    footer { visibility: hidden; }
 
-# ──────────────────────────────────────────────────────────
-# Main page
-# ──────────────────────────────────────────────────────────
-st.title("🦴 PRE-SLIP: Phenotype Screening Calculator")
-st.markdown(
-    "**Pre**operative **Phenotype** classification for **L**umbar **I**sthmic "
-    "**S**pondylolisthesis — a data-driven screening tool using "
-    "6 clinic-visit variables."
-)
-
-st.divider()
-
-# ── Study overview ──
-st.header("Study Overview")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("""
-    **Background**  
-    Lumbar isthmic spondylolisthesis (LIS) exhibits heterogeneous 
-    spino-pelvic biomechanical profiles that may influence surgical 
-    outcomes. Conventional grading (e.g. Meyerding) relies on a 
-    single parameter and does not capture this heterogeneity.
-
-    **Objective**  
-    We applied unsupervised clustering to 13 spino-pelvic parameters 
-    in 501 consecutive LIS patients to identify clinically meaningful 
-    phenotypes, then built a simplified screening model using 6 
-    variables obtainable during a routine clinic visit.
-    """)
-
-with col2:
-    st.markdown("""
-    **Phenotypes identified (K-Means, k = 3)**
-
-    | Phenotype | n | Key characteristics |
-    |:---|:---:|:---|
-    | **Compensated** | 193 (38.5 %) | Preserved LL & SS, maintained sagittal balance |
-    | **Rigid** | 129 (25.7 %) | Reduced segmental mobility, low LL |
-    | **Unstable** | 179 (35.7 %) | Dynamic instability, relatively preserved SS |
-    """)
-
-st.divider()
-
-# ── Screening model performance ──
-st.header("Screening Model Performance")
-st.markdown(
-    "Multinomial logistic regression · 10-fold stratified cross-validation · "
-    "6 predictors: **Age, BMI, Gender, VAS, LL, SS**"
-)
-
-perf = pd.read_csv(
-    Path(__file__).parent / "results_v2" / "tables"
-    / "T2_screening_classifier_performance.csv"
-) if (Path(__file__).parent / "results_v2").exists() else None
-
-if perf is not None:
-    st.dataframe(
-        perf.style.format({
-            "AUC_macro": "{:.3f}", "AUC_95CI_low": "{:.3f}",
-            "AUC_95CI_high": "{:.3f}", "AUC_Compensated": "{:.3f}",
-            "AUC_Rigid": "{:.3f}", "AUC_Unstable": "{:.3f}",
-            "Accuracy": "{:.3f}", "Macro_F1": "{:.3f}",
-            "Brier_mean": "{:.3f}",
-        }),
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    metrics = {
-        "Macro AUC": 0.881, "AUC (Compensated)": 0.915,
-        "AUC (Rigid)": 0.905, "AUC (Unstable)": 0.822,
-        "Accuracy": 0.743, "Macro F1": 0.741,
+    /* Custom header */
+    .main-header {
+        text-align: center;
+        padding: 2rem 1rem 1rem;
     }
-    cols = st.columns(len(metrics))
-    for col, (k, v) in zip(cols, metrics.items()):
-        col.metric(k, f"{v:.3f}")
+    .main-header h1 {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #1B5E7B;
+        margin-bottom: 0.2rem;
+        letter-spacing: 0.02em;
+    }
+    .main-header p {
+        font-size: 0.88rem;
+        color: #666;
+        margin-top: 0;
+    }
+    .badge-row {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        margin-top: 12px;
+        flex-wrap: wrap;
+    }
+    .badge {
+        background: #E8F2F7;
+        color: #1B5E7B;
+        border-radius: 16px;
+        padding: 4px 14px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+    }
 
-st.divider()
+    /* Card styling */
+    .input-section {
+        background: #FAFAF8;
+        border: 1px solid #E8E6E0;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }
+    .section-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #1B5E7B;
+        margin-bottom: 1rem;
+        padding-left: 8px;
+        border-left: 3px solid #1B5E7B;
+    }
 
-# ── Cohort summary statistics ──
-st.header("Cohort Summary")
+    /* Result phenotype card */
+    .pheno-card {
+        text-align: center;
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin: 1rem 0;
+    }
+    .pheno-card .label {
+        font-size: 0.68rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #888;
+    }
+    .pheno-card .name {
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0.3rem 0;
+    }
+    .pheno-card .conf {
+        font-size: 0.9rem;
+        color: #666;
+        font-family: 'Courier New', monospace;
+    }
+    .compensated-card { background: rgba(0,114,178,0.06); border: 1.5px solid rgba(0,114,178,0.2); }
+    .compensated-card .name { color: #0072B2; }
+    .rigid-card { background: rgba(213,94,0,0.06); border: 1.5px solid rgba(213,94,0,0.2); }
+    .rigid-card .name { color: #D55E00; }
+    .unstable-card { background: rgba(0,158,115,0.06); border: 1.5px solid rgba(0,158,115,0.2); }
+    .unstable-card .name { color: #009E73; }
 
-X_df = st.session_state["X_df"]
-labels = st.session_state["labels_df"]
+    /* Disclaimer */
+    .disclaimer {
+        text-align: center;
+        font-size: 0.7rem;
+        color: #999;
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #E8E6E0;
+        line-height: 1.6;
+    }
 
-summary_rows = []
-for feat in FEATURE_NAMES:
-    row = {"Feature": FEATURE_DISPLAY.get(feat, feat)}
-    col = X_df[feat]
-    if feat == "Gender":
-        row["Overall (n = 501)"] = f"{int(col.sum())} male ({col.mean()*100:.1f} %)"
-        for cls in CLASS_NAMES:
-            mask = labels["Phenotype"] == cls
-            sub = col[mask]
-            row[cls] = f"{int(sub.sum())} ({sub.mean()*100:.1f} %)"
-    else:
-        row["Overall (n = 501)"] = f"{col.mean():.1f} ± {col.std():.1f}"
-        for cls in CLASS_NAMES:
-            mask = labels["Phenotype"] == cls
-            sub = col[mask]
-            row[cls] = f"{sub.mean():.1f} ± {sub.std():.1f}"
-    summary_rows.append(row)
+    /* Button */
+    .stButton > button {
+        background: linear-gradient(135deg, #1B5E7B, #1A7A5A) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 0.65rem 2rem !important;
+        font-weight: 600 !important;
+        font-size: 0.92rem !important;
+        letter-spacing: 0.03em !important;
+        transition: transform 0.15s, box-shadow 0.2s !important;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 12px rgba(27,94,123,0.3) !important;
+    }
 
-st.dataframe(
-    pd.DataFrame(summary_rows),
-    use_container_width=True,
-    hide_index=True,
-)
+    /* Number input styling */
+    [data-testid="stNumberInput"] input {
+        border-radius: 8px !important;
+        font-family: 'Courier New', monospace !important;
+    }
+    [data-testid="stSelectbox"] > div > div {
+        border-radius: 8px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-st.divider()
+# ── Data ──
+DATA_DIR = Path(__file__).parent / "streamlit_data"
+FEATURE_NAMES = ["Age", "BMI", "Gender", "VAS", "LL", "SS"]
+CLASS_NAMES = ["Compensated", "Rigid", "Unstable"]
+COLORS = {"Compensated": "#0072B2", "Rigid": "#D55E00", "Unstable": "#009E73"}
 
-# ── Navigation hint ──
-st.info(
-    "👈  Use the sidebar to navigate to **New Patient Prediction** "
-    "to classify a new patient and view the SHAP explanation.",
-    icon="ℹ️",
-)
 
-# ── Citation ──
-st.header("Citation")
-st.code(
-    "[Authors]. Phenotype-based classification of lumbar isthmic "
-    "spondylolisthesis using unsupervised clustering: a data-driven "
-    "approach for preoperative screening and prognostic stratification. "
-    "The Spine Journal, 2026.",
-    language=None,
-)
+@st.cache_resource
+def load_model():
+    pipeline = joblib.load(DATA_DIR / "lr_pipeline.joblib")
+    scaler = joblib.load(DATA_DIR / "scaler.joblib")
+    lr_model = joblib.load(DATA_DIR / "lr_model.joblib")
+    X_df = pd.read_csv(DATA_DIR / "all_features.csv")
+    return pipeline, scaler, lr_model, X_df
 
-st.caption(
-    "**Disclaimer** — This tool is provided for research and educational "
-    "purposes only. It is not a substitute for professional clinical "
-    "judgment. External validation is recommended before clinical adoption."
-)
+
+pipeline, scaler, lr_model, X_df = load_model()
+
+# ── Header ──
+st.markdown("""
+<div class="main-header">
+    <h1>PRE-SLIP Calculator</h1>
+    <p>Preoperative Phenotype Screening for Lumbar Isthmic Spondylolisthesis</p>
+    <div class="badge-row">
+        <span class="badge">Logistic Regression</span>
+        <span class="badge">10-Fold CV · AUC 0.881</span>
+        <span class="badge">n = 501</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Input section ──
+st.markdown('<div class="section-label">Patient Parameters</div>', unsafe_allow_html=True)
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    age = st.number_input("Age (years)", value=62, min_value=18, max_value=100, step=1,
+                          help="Cohort range: 44 – 80")
+with col2:
+    gender = st.selectbox("Gender", options=["Female", "Male"],
+                          help="0 = Female, 1 = Male")
+with col3:
+    bmi = st.number_input("BMI (kg/m²)", value=25.4, min_value=10.0, max_value=60.0,
+                          step=0.1, format="%.1f", help="Cohort range: 17.6 – 38.7")
+
+col4, col5, col6 = st.columns(3)
+with col4:
+    vas = st.selectbox("VAS (0–10)", options=list(range(11)), index=3,
+                       help="Visual Analogue Scale for pain")
+with col5:
+    ll = st.number_input("Lumbar Lordosis LL (°)", value=47.2, min_value=0.0,
+                         max_value=120.0, step=0.1, format="%.1f",
+                         help="Cohort range: 6.7 – 105.5")
+with col6:
+    ss = st.number_input("Sacral Slope SS (°)", value=37.8, min_value=0.0,
+                         max_value=80.0, step=0.1, format="%.1f",
+                         help="Cohort range: 8.9 – 66.8")
+
+st.write("")
+predict_clicked = st.button("Calculate Phenotype", use_container_width=True)
+
+# ── Prediction ──
+if predict_clicked:
+    gender_val = 1 if gender == "Male" else 0
+    patient = np.array([[age, bmi, gender_val, vas, ll, ss]])
+
+    pred_idx = pipeline.predict(patient)[0]
+    pred_proba = pipeline.predict_proba(patient)[0]
+    pred_label = CLASS_NAMES[pred_idx]
+    pred_conf = pred_proba[pred_idx]
+
+    st.markdown("---")
+
+    # Phenotype result card
+    card_class = pred_label.lower() + "-card"
+    st.markdown(f"""
+    <div class="pheno-card {card_class}">
+        <div class="label">Predicted phenotype</div>
+        <div class="name">{pred_label}</div>
+        <div class="conf">Probability {pred_conf:.1%}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Probability bars
+    st.markdown('<div class="section-label">Phenotype Probabilities</div>',
+                unsafe_allow_html=True)
+
+    for cls, prob in zip(CLASS_NAMES, pred_proba):
+        c1, c2, c3 = st.columns([2, 6, 1.5])
+        with c1:
+            st.markdown(f"**{cls}**")
+        with c2:
+            st.progress(float(prob))
+        with c3:
+            st.markdown(f"`{prob:.1%}`")
+
+    # SHAP waterfall
+    st.markdown("---")
+    st.markdown('<div class="section-label">SHAP Explanation</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Waterfall plots decompose the prediction for each phenotype. "
+        "Red = pushes probability higher; Blue = pushes probability lower."
+    )
+
+    patient_scaled = scaler.transform(patient)
+    X_background = scaler.transform(X_df.values)
+    explainer = shap.LinearExplainer(lr_model, X_background,
+                                     feature_names=FEATURE_NAMES)
+    sv = explainer.shap_values(patient_scaled)
+
+    shap_cols = st.columns(3)
+    for i, cls in enumerate(CLASS_NAMES):
+        with shap_cols[i]:
+            st.markdown(f"**{cls}**")
+            explanation = shap.Explanation(
+                values=sv[0, :, i],
+                base_values=explainer.expected_value[i],
+                data=patient[0],
+                feature_names=FEATURE_NAMES,
+            )
+            fig, ax = plt.subplots(figsize=(4, 3))
+            shap.plots.waterfall(explanation, max_display=6, show=False)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
+# ── Disclaimer ──
+st.markdown("""
+<div class="disclaimer">
+    <strong>Disclaimer</strong> — For research and educational purposes only.
+    Not a substitute for professional clinical judgment.<br>
+    External validation is recommended before clinical adoption.<br><br>
+    [Authors]. <em>The Spine Journal</em>, 2026.
+</div>
+""", unsafe_allow_html=True)
