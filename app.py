@@ -279,6 +279,5 @@ st.markdown("""
     <strong>Disclaimer</strong> — For research and educational purposes only.
     Not a substitute for professional clinical judgment.<br>
     External validation is recommended before clinical adoption.<br><br>
-    [Authors]. <em>The Spine Journal</em>, 2026.
 </div>
 """, unsafe_allow_html=True)
